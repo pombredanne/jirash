@@ -67,6 +67,15 @@ def _decode(data, encoding, is8bit=re.compile("[\x80-\xff]").search):
     return data
 xmlrpclib._decode = _decode
 
+def _isint(s):
+    try:
+        int(s)
+    except ValueError:
+        return False
+    else:
+        return True
+
+
 
 #---- Jira API
 
@@ -177,7 +186,8 @@ class Jira(object):
         filterObj = None
         filters = self.filters()
         # - if int, then try id match first
-        if isinstance(filter, int):
+        if _isint(filter):
+            filter = int(filter)
             for f in filters:
                 if int(f["id"]) == filter:
                     filterObj = f
@@ -428,12 +438,31 @@ class JiraShell(cmdln.Cmdln):
             help="Jira base URL. Otherwise defaults to 'jira_url' value from config file.")
         return parser
 
+    def _generate_cfg(self, cfg_path):
+        url      = raw_input("Jira URL: ")
+        username = raw_input("Username: ")
+        password = getpass.getpass("Password: ")
+
+        # TODO Attempt login to validate before saving
+        config = {
+            'jira_url': url,
+            url: {
+                'username': username,
+                'password': password,
+            },
+        }
+
+        f = codecs.open(cfg_path, 'w', 'utf8')
+        f.write(json.dumps(config, indent=2))
+        f.close()
+
     def _load_cfg(self, cfg_path=None):
         if not cfg_path:
             cfg_path = os.path.expanduser("~/.jirash.json")
         if not os.path.exists(cfg_path):
-            sys.stderr.write("'%s' config file does not exist" % cfg_path)
-            sys.exit(1)
+            print "This appears to be your first time running jirash, let me generate your config"
+            if self._generate_cfg(cfg_path):
+                print "Config file generated! [%s]" % cfg_path
         f = codecs.open(cfg_path, 'r', 'utf8')
         try:
             return json.load(f)
@@ -964,7 +993,7 @@ def getTerminalSize():
 
 
 def safeprint(s, stream=sys.stdout):
-    if stream.encoding in (None, 'ascii'):
+    if stream.encoding not in ('UTF-8',):
         s = s.encode('ascii', 'replace')
     print s
 
@@ -972,7 +1001,7 @@ def safeprint(s, stream=sys.stdout):
 def clip(s, length, ellipsis=True):
     if len(s) > length:
         if ellipsis:
-            if sys.stdout.encoding not in (None, 'ascii'):
+            if sys.stdout.encoding in ('UTF-8',):
                 s = s[:length-1] + u'\u2026'
             else:
                 s = s[:length-3] + '...'
@@ -1037,6 +1066,7 @@ if __name__ == "__main__":
         print("error: %s" % ex)
         sys.exit(1)
     except:
+        import platform
         import traceback
         print("")
         traceback.print_exc()
@@ -1050,7 +1080,7 @@ OS: %s
 * to report this error. Thanks!                             *
 * -- Trent                                                  *
 * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *""" % (
-sys.version, os.uname()))
+sys.version, platform.platform()))
         sys.exit(1)
     else:
         sys.exit(retval)
