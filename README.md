@@ -56,11 +56,11 @@ date (i.e. there are probably more supported commands in the latest).
     TOOLS       TOOLS: Tools and Extras           trent.mick
     ...
 
-    $ jirash issues TOOLS-90
-    TOOLS-90: Add a distclean target (mark.cavage -> trent.mick, Improvem...)
+    $ jirash issue TOOLS-90
+    TOOLS-90 Add a distclean target (mark.cavage -> trent.mick, Improvem...)
 
     $ jirash TOOLS-90     # shortcut
-    TOOLS-90: Add a distclean target (mark.cavage -> trent.mick, Improvem...)
+    TOOLS-90 Add a distclean target (mark.cavage -> trent.mick, Improvem...)
 
     $ jirash createissue TOOLS
     Summary: Foo is broken
@@ -70,7 +70,7 @@ date (i.e. there are probably more supported commands in the latest).
     blah
     blah
     .
-    created: TOOLS-157: Foo is broken (trent.mick -> trent.mick, Bug, Normal, Open)
+    created: TOOLS-157 Foo is broken (trent.mick -> trent.mick, Bug, Normal, Open)
 
     $ jirash filters
     ID     AUTHOR           NAME
@@ -111,6 +111,9 @@ The possible config vars are:
 - `createissue_no_browse`. Set this to `true` to not open a newly created issue
   in the browser as part of `jirash createissue`. IOW, this is a substitute for
   the "-B, --no-browse" option.
+- `createissue_use_editor`. Set this to `true` to have `jirash createissue`
+  use your $EDITOR to edit the issue summary (title) and description instead
+  of prompting on stdin.
 
 
 # License

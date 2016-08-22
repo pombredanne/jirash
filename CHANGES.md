@@ -1,6 +1,72 @@
 # jirash Changelog
 
+## 1.8.0
+
+- `jirash issue -s,--short KEY` Add the short option to display a short
+  issue summary: `$key $title`. This is a somewhat biased "short" form
+  that is used at Joyent for commit messages.
+
+## 1.7.0
+
+- Change the one-line ("flat") string representation of an issue to no longer
+  have the colon separating the ID and the ticket title. E.g.:
+
+      # old
+      $ jirash DOCKER-404
+      DOCKER-404: when provision fails we should return only req_id and not VM info (josh -> josh, Bug, Normal, Resolved)
+
+      # new
+      $ jirash DOCKER-404
+      DOCKER-404 when provision fails we should return only req_id and not VM info (josh -> josh, Bug, Normal, Resolved)
+
+  This is motivated by
+  <https://github.com/joyent/eng/blob/master/docs/index.md#commit-comments>.
+
+## 1.6.1
+
+- `jirash createissue ...` intended to default to not passing an assignee, i.e.
+  use the defualt for the project. However, accidentally, when using the editor
+  to create the issue data, it defaulted to 'me'. I don't want that.
+
+## 1.6.0
+
+- [issue #24] `jirash createissue` improvements around editing the
+  summary/description in your editor:
+    - `jirash createissue -e ...` to explicitly use editor
+    - `jirash createissue -E file ...` to also specify a template file
+    - If the issue creation fails the editted file will be saved out so
+      you don't lose your changes. The following is printed in that case:
+
+            $ jirash createissue VMAPI
+            Note: Your edits have been saved to VMAPI-NNN.1431114917.jirash, reload with:
+                jirash createissue -E VMAPI-NNN.1431114917.jirash ...
+
+            Traceback (most recent call last):
+              File "/Users/trentm/tm/jirash/lib/jirashell.py", line 1294, in <module>
+            ...
+
+
+## 1.5.0
+
+- Add support for `"createissue_use_editor": true` in "~/.jirash.json" config
+  which will change `jirash createissue PROJECT ...` to open your `$EDITOR`
+  to edit the issue `summary` and `description`.
+
+## 1.4.0
+
+- Update `jirash issues -f FILTER` handling of FILTER to prefer a *full word*
+  match against existing filter names. E.g. A filter of "OPS" would prefer
+  the filter named "OPS: open issues" over "DCOPS: open issues".
+
+- TOOLS-525: `jirash createissue -t TYPE` to specify issue type
+
+
 ## 1.3.2
+
+- `jirash link <issue> <relation-from-linktypes> <issue>`, e.g.
+  `jirash link PROJ-123 depends on PROJ-101`, to link issues.
+
+- `jirash linktypes` to list issue link types.
 
 - [issue #10] "createissue_no_browse" config var to skip opening newly created
   issues in the browser.

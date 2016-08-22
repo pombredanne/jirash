@@ -7,7 +7,7 @@
 # <http://docs.atlassian.com/software/jira/docs/api/rpc-jira-plugin/latest/com/atlassian/jira/rpc/xmlrpc/XmlRpcService.html>
 #
 
-__version__ = "1.3.2"
+__version__ = "1.8.0"
 
 import warnings
 warnings.filterwarnings("ignore", module="wstools.XMLSchema", lineno=3107)
@@ -31,6 +31,7 @@ import re
 TOP = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(TOP, "deps"))
 import cmdln
+import requests
 
 # This is a total hack for <https://github.com/trentm/jirash/issues/2>.
 # It ensures that utf-8 is used for implicit string conversion deep
@@ -131,6 +132,18 @@ class Jira(object):
         else:
             raise JiraShellError("unknown SOAPpy outparam type: '%s'" % typeName)
 
+    def _jira_rest_call(self, method, path, **kwargs):
+        """Typical kwargs (from `requests`) are:
+
+        - params
+        - data
+        - headers
+        """
+        url = self.jira_url + '/rest/api/2' + path
+        r = requests.request(method, url, auth=(self.username, self.password),
+                **kwargs)
+        return r
+
     def filters(self):
         if "filters" not in self.cache:
             filters = self.server.jira1.getFavouriteFilters(self.auth)
@@ -171,7 +184,46 @@ class Jira(object):
         else:
             raise JiraShellError("unknown priority: %r" % priority_id)
 
+    def issue_link_types(self):
+        if "issue_link_types" not in self.cache:
+            res = self._jira_rest_call("GET", "/issueLinkType")
+            if res.status_code != 200:
+                raise JiraShellError("error getting issue link types: %s"
+                    % res.text)
+            self.cache["issue_link_types"] = res.json()["issueLinkTypes"]
+        return self.cache["issue_link_types"]
+
+    def link(self, link_type_name, inward_issue_key, outward_issue_key):
+        """Link issue.
+
+        E.g. making PROJ-123 a dup of PROJ-100 would be:
+            <jira>.link('Duplicate', 'PROJ-123', 'PROJ-100')
+        where 'Duplicate' is the link type "name" (as from `.link_types()`).
+        """
+        data = {
+            "type": {
+                "name": link_type_name
+            },
+            "inwardIssue": {
+                "key": inward_issue_key
+            },
+            "outwardIssue": {
+                "key": outward_issue_key
+            }
+        }
+        res = self._jira_rest_call('POST', '/issueLink',
+            headers={'content-type': 'application/json'},
+            data=json.dumps(data))
+        if res.status_code != 201:
+            raise JiraShellError('error linking (%s, %s, %s): %s %s'
+                % (link_type_name, inward_issue_key, outward_issue_key,
+                    res.status_code, res.text))
+
     def issue(self, key):
+#XXX
+#        It's right under 'issuelinks' in each issue's JSON representation. Example:
+#
+#https://jira.atlassian.com/rest/api/latest/issue/JRA-9?fields=summary,issuelinks
         return self.server.jira1.getIssue(self.auth, key)
 
     def issues_from_filter(self, filter):
@@ -198,6 +250,12 @@ class Jira(object):
             # - try full name match
             for f in filters:
                 if f["name"] == filter:
+                    filterObj = f
+                    break
+        if not filterObj:
+            # - try full word substring match
+            for f in filters:
+                if re.search(r'\b%s\b' % filter, f["name"]):
                     filterObj = f
                     break
         if not filterObj:
@@ -607,6 +665,7 @@ class JiraShell(cmdln.Cmdln):
                 user["email"])
 
     @cmdln.option("-j", "--json", action="store_true", help="JSON output")
+    @cmdln.option("-s", "--short", action="store_true", help="Short issue repr")
     def do_issue(self, subcmd, opts, key):
         """Get an issue.
 
@@ -618,6 +677,8 @@ class JiraShell(cmdln.Cmdln):
         issue = self.jira.issue(key)
         if opts.json:
             print json.dumps(issue, indent=2)
+        elif opts.short:
+            print self._issue_repr_short(issue)
         else:
             print self._issue_repr_flat(issue)
 
@@ -707,11 +768,62 @@ class JiraShell(cmdln.Cmdln):
     #    print "XXX %r %r %r" % (test, line, start)
     #    return []
 
+    @cmdln.option("-j", "--json", action="store_true", help="JSON output")
+    def do_linktypes(self, subcmd, opts):
+        """List issue link types.
+
+        Usage:
+            ${cmd_name}
+
+        ${cmd_option_list}
+        """
+        types = self.jira.issue_link_types()
+        if opts.json:
+            print json.dumps(types, indent=2)
+        else:
+            template = "%-6s  %-12s  %s"
+            print template % ("ID", "NAME", "OUTWARD")
+            for t in types:
+                print template % (t["id"], t["name"], t["outward"])
+
+    #@cmdln.option("-j", "--json", action="store_true", help="JSON output")
+    def do_link(self, subcmd, opts, *args):
+        """Link a Jira issue to another.
+
+        Usage:
+            ${cmd_name} <issue> <relation> <issue>
+
+        ${cmd_option_list}
+        `<relation>` is a "outward" field from this Jira's issue link types
+        (list with `jirash linktypes`). A unique substring is supported as well
+
+        Examples:
+            jirash link MON-123 depends on MON-100
+            jirash link OS-2000 duplicates OS-1999
+            jirash link IMGAPI-123 dup IMGAPI-101  # "dup" is a substring
+        """
+        if len(args) < 3:
+            raise JiraShellError('not enough arguments: %s' % ' '.join(args))
+
+        link_types = self.jira.issue_link_types()
+        first = args[0]
+        reln = ' '.join(args[1:-1])
+        second = args[-1]
+        candidates = [lt for lt in link_types
+            if reln.lower() in lt["outward"].lower()]
+        if len(candidates) != 1:
+            raise JiraShellError("no unique link type match for '%s': "
+                "must match one of in '%s'"
+                % (reln, "', '".join(lt["outward"] for lt in link_types)))
+        link_type = candidates[0]
+        self.jira.link(link_type["name"], first, second)
+        print "Linked: %s %s %s" % (first, link_type["outward"], second)
+
     @cmdln.option("-p", "--project", dest="project_key",
         help="Project for which to get issue types.")
     @cmdln.option("-j", "--json", action="store_true", help="JSON output")
     def do_issuetypes(self, subcmd, opts):
-        """Get an issue types (e.g. bug, task, ...).
+        """List issue types (e.g. bug, task, ...).
 
         Usage:
             ${cmd_name}
@@ -746,7 +858,7 @@ class JiraShell(cmdln.Cmdln):
         if opts.json:
             print json.dumps(versions, indent=2)
         else:
-            template = "%-5s  %-24s  %8s  %8s"
+            template = "%-5s  %-30s  %8s  %8s"
             print template % ("ID", "NAME", "RELEASED", "ARCHIVED")
             for v in versions:
                 print template % (
@@ -779,11 +891,27 @@ class JiraShell(cmdln.Cmdln):
     #TODO: attachments?
     @cmdln.option("-d", "--description",
         help="issue description. If not given, this will prompt.")
+    @cmdln.option("-t", "--type",
+        help="Issue type or a case-insensitive substring match against valid "
+             "issue types for the given project. This defaults to `1` for "
+             "bwcompat reasons, which "
+             "in Joyent's Jira is 'Bug'. Use `jirash issuetypes -p "
+             "PROJECT-NAME` to list valid issue types for a project.")
     @cmdln.option("-a", "--assignee",
-        help="Assignee username. Note that this is the username field, NOT their full name. (XXX Don't have a good way to list available usernames right now.)")
+        help="Assignee username. Note that this is the username field, "
+             "NOT their full name. (XXX Don't have a good way to list "
+             "available usernames right now.)")
     @cmdln.option("-c", "--component", dest="components", action="append",
         metavar="COMPONENT",
-        help="Component id or substring match. Use `jirash components PROJ` to list them. Some Jira projects require a component and don't have a default, but jirash can't detect that so doesn't know when to require a component.")
+        help="Component id or substring match. Use `jirash components PROJ` "
+             "to list them. Some Jira projects require a component and don't "
+             "have a default, but jirash can't detect that so doesn't know "
+             "when to require a component.")
+    @cmdln.option("-e", dest="editor",
+        help="Edit issue summary/description in your editor.")
+    @cmdln.option("-E", dest="editor_template",
+        help="Template to use for editing issue summary/description. "
+            "Implies '-e'.")
     @cmdln.option("-B", "--no-browse", action="store_true",
         help="Do *not* attempt to open the browser to the created issue.")
     def do_createissue(self, subcmd, opts, project_key, *summary):
@@ -793,27 +921,58 @@ class JiraShell(cmdln.Cmdln):
             ${cmd_name} PROJECT-KEY [SUMMARY]
 
         ${cmd_option_list}
-
-        TODO:
-        - type, default to 'bug'
         """
         data = {
             "project": project_key,
-            "type": 1,   # Bug
         }
+
+        if opts.type:
+            issue_types = self.jira.issue_types(project_key=project_key)
+            # First try exact match.
+            for it in issue_types:
+                if it["name"] == opts.type:
+                    data["type"] = int(it["id"])
+                    break
+            else:
+                # Try case-insensitive full match.
+                for it in issue_types:
+                    if it["name"].lower() == opts.type.lower():
+                        data["type"] = int(it["id"])
+                        break
+                else:
+                    # Try case-insensitive substring match (require unique).
+                    matches = [it for it in issue_types if
+                        opts.type.lower() in it["name"].lower()]
+                    if len(matches) == 1:
+                        data["type"] = int(matches[0]["id"])
+                    else:
+                        raise JiraShellError(
+                            "no issue types for project %s match '%s', use "
+                            "`jirash issuetypes -f %s` to list valid issue "
+                            "types" % (project_key, opts.type, project_key))
+        else:
+            # Hardcoded to '1' for bwcompat. This is "Bug" in Joyent's Jira.
+            data["type"] = 1
+
+        use_editor = (opts.editor is not None
+            or opts.editor_template is not None
+            or self.cfg.get("createissue_use_editor", False))
 
         if summary:
             summary = u' '.join(summary)
             print u"Summary: %s" % summary
-        else:
+        elif not use_editor:
             summary = query("Summary")
-        data["summary"] = summary.encode('utf-8')
+        else:
+            summary = None
 
-        if not opts.assignee:
+        if opts.assignee:
+            assignee = opts.assignee
+        elif use_editor:
+            assignee = None
+        else:
             assignee = query(
                 "Assignee (blank for default, 'me' for yourself)")
-        else:
-            assignee = opts.assignee
         if assignee:
             if assignee == "me":
                 data["assignee"] = self.cfg[self.jira_url]["username"]
@@ -828,13 +987,66 @@ class JiraShell(cmdln.Cmdln):
                 self.jira.component(project_key, cid)["name"]
                 for cid in component_ids)
 
-        if not opts.description:
+        if opts.description:
+            description = opts.description
+        elif not use_editor:
             description = query_multiline("Description")
         else:
-            description = opts.description
+            description = None
+
+        if use_editor and (not summary or not description):
+            text = """# Edit the new issue *summary* and *description*:
+#
+#       My summary on one line at the top
+#
+#       Then some lines
+#       of description
+#       here.
+#
+# Leading lines starting with '#' are dropped.
+"""
+            if opts.editor_template:
+                text = codecs.open(opts.editor_template, 'r', 'utf8').read()
+            cursor_line = 10
+            if summary:
+                text += summary + '\n\n\n'
+                cursor_line = 12
+            elif description:
+                text += 'SUMMARY\n\n'
+            if description:
+                text += description
+            if not summary and not description:
+                text += "\n"
+            while True:
+                text = edit_in_editor('%s-NNN.jirash' % project_key, text,
+                    cursor_line)
+                lines = text.splitlines(False)
+                while lines and lines[0].startswith('#'):
+                    lines.pop(0)
+                if len(lines) >= 3 and not lines[1].strip():
+                    summary = lines[0]
+                    description = '\n'.join(lines[2:]).strip()
+                    break
+                sys.stderr.write('error: content is not "SUMMARY\\n\\nDESCRIPTION"\n')
+                raw_input("Press any key to re-edit...")
+
+        data["summary"] = summary.encode('utf-8')
         data["description"] = description.encode('utf-8')
 
-        issue = self.jira.create_issue(data)
+        try:
+            issue = self.jira.create_issue(data)
+        except:
+            if use_editor:
+                # Save 'text' out so it isn't all lost data.
+                save_file = '%s-NNN.%d.jirash' % (project_key, int(time.time()))
+                fout = codecs.open(save_file, 'w', 'utf8')
+                fout.write(text)
+                fout.close()
+                sys.stderr.write(
+                    'Note: Your edits have been saved to %s, reload with:\n'
+                    '    jirash createissue -E %s ...\n'
+                    % (save_file, save_file))
+            raise
         print "created:", self._issue_repr_flat(issue)
         no_browse = (opts.no_browse
             or self.cfg.get("createissue_no_browse", False))
@@ -911,10 +1123,13 @@ class JiraShell(cmdln.Cmdln):
                     except JiraShellError, e:
                         # The issue type may have been removed. Just use the id.
                         issue_type = issue["type"]
-                    priority = self.jira.priority(issue["priority"])
                     status = self.jira.status(issue["status"])
+                    if "priority" in issue:
+                        priority = self.jira.priority(issue["priority"])["name"]
+                    else:
+                        priority = "-"
                     state = "%s/%s/%s" % (
-                        clip(priority["name"], 4, False),
+                        clip(priority, 4, False),
                         clip(status["name"].replace(' ', ''), 4, False),
                         clip(issue_type, 3, False))
                     safeprint(template % (
@@ -936,18 +1151,29 @@ class JiraShell(cmdln.Cmdln):
             except JiraShellError, e:
                 # The issue type may have been removed. Just use the id.
                 issue_type = "type:" + issue["type"]
-            priority = self.jira.priority(issue["priority"])
+
+            if "priority" in issue:
+                priority = self.jira.priority(issue["priority"])["name"]
+            else:
+                priority = "<no priority>"
             status = self.jira.status(issue["status"])
-            return "%s: %s (%s -> %s, %s, %s, %s)" % (
+            return "%s %s (%s -> %s, %s, %s, %s)" % (
                 issue["key"],
                 issue["summary"],
                 issue["reporter"],
                 issue.get("assignee", "<unassigned>"),
                 issue_type,
-                priority["name"],
+                priority,
                 status["name"])
         except Exception, e:
             log.error("error making issue repr: %s (issue=%r)", e, issue)
+            raise
+
+    def _issue_repr_short(self, issue):
+        try:
+            return "%s %s" % (issue["key"], issue["summary"])
+        except Exception, e:
+            log.error("error making short issue repr: %s (issue=%r)", e, issue)
             raise
 
 
@@ -1032,6 +1258,27 @@ def query_multiline(question):
         lines.append(line.decode('utf-8'))
     answer = u'\n'.join(lines)
     return answer
+
+def edit_in_editor(filename, before_text, cursor_line=None):
+    import tempfile
+    (fd, tmp_path) = tempfile.mkstemp(filename)
+    fout = os.fdopen(fd, 'w')
+    #XXX
+    #tmp_path = tempfile(None, filename + ".tmp.")
+    #fout = codecs.open(tmp_path, 'w', 'utf8')
+    fout.write(before_text)
+    fout.close()
+    editor = os.environ['EDITOR']
+    line_cmd = ""
+    if editor in ('vi', 'vim') and cursor_line is not None:
+        line_cmd = "+%d" % cursor_line
+    os.system('%s %s -f "%s"' % (editor, line_cmd, tmp_path))
+    fin = codecs.open(tmp_path, 'r', 'utf8')
+    after_text = fin.read()
+    fin.close()
+    return after_text
+
+
 
 
 #---- mainline
